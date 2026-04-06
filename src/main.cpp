@@ -21,7 +21,7 @@ bool isWifiConnected = false; unsigned long lastWeatherUpdate = 0;
 
 int centerX = 160, centerY = 120, eyeDistance = 70, eyeSize = 60;
 float lookX = 0, lookY = 0;
-unsigned long lastBlink = 0, lastExpressionChange = 0, touchTimer = 0, modeTimer = 0;
+unsigned long lastBlink = 0, lastExpressionChange = 0;
 
 enum Emotion { NEUTRAL, SLEEPY, BORED, SURPRISED, HAPPY, WINK, SAD, ANGRY, LOVE };
 Emotion currentEmotion = NEUTRAL;
@@ -30,6 +30,7 @@ DisplayMode currentMode = CLOCK_MODE;
 
 bool isSdFontLoaded = false;
 uint8_t* globalFontBuffer = nullptr;
+M5Canvas canvas(&M5.Display); // 더블 버퍼링을 위한 캔버스
 
 void fetchNews(); void fetchStocks(); void fetchWeather(); void drawClock();
 
@@ -118,67 +119,73 @@ void fetchWeather() {
 void drawClock() {
   auto d = M5.Rtc.getDate(); auto t = M5.Rtc.getTime();
   const char *daysKR[] = {"일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"};
-  M5.Display.startWrite(); M5.Display.fillScreen(WHITE);
-  M5.Display.fillRect(0, 0, 320, 35, M5.Display.color565(240, 240, 240));
-  M5.Display.drawFastHLine(0, 35, 320, M5.Display.color565(200, 200, 200));
-  if (isSdFontLoaded && globalFontBuffer) M5.Display.loadFont(globalFontBuffer);
-  else M5.Display.setFont(&fonts::efontKR_14);
-  M5.Display.setTextColor(BLACK); char topStr[120];
+  
+  canvas.fillScreen(WHITE);
+  canvas.fillRect(0, 0, 320, 35, canvas.color565(240, 240, 240));
+  canvas.drawFastHLine(0, 35, 320, canvas.color565(200, 200, 200));
+  
+  if (isSdFontLoaded && globalFontBuffer) canvas.loadFont(globalFontBuffer);
+  else canvas.setFont(&fonts::efontKR_14);
+  
+  canvas.setTextColor(BLACK); char topStr[120];
   sprintf(topStr, "%04d.%02d.%02d %s | %s %.1fC", d.year, d.month, d.date, daysKR[d.weekDay % 7], weatherKR.c_str(), currentTemp);
-  M5.Display.drawCenterString(topStr, 160, -10);
-  M5.Display.setFont(&fonts::FreeSansBold24pt7b); M5.Display.setTextColor(M5.Display.color565(0, 80, 180)); 
-  char timeStr[10]; sprintf(timeStr, "%02d:%02d", t.hours, t.minutes); M5.Display.drawCenterString(timeStr, 160, 52);
-  M5.Display.drawFastHLine(15, 95, 290, M5.Display.color565(180, 180, 180)); M5.Display.drawFastHLine(15, 235, 290, M5.Display.color565(180, 180, 180));
-  if (isSdFontLoaded && globalFontBuffer) M5.Display.loadFont(globalFontBuffer);
-  else M5.Display.setFont(&fonts::efontKR_24);
+  canvas.drawCenterString(topStr, 160, -10);
+  
+  canvas.setFont(&fonts::FreeSansBold24pt7b); canvas.setTextColor(canvas.color565(0, 80, 180)); 
+  char timeStr[10]; sprintf(timeStr, "%02d:%02d", t.hours, t.minutes); canvas.drawCenterString(timeStr, 160, 52);
+  
+  canvas.drawFastHLine(15, 90, 290, canvas.color565(180, 180, 180)); canvas.drawFastHLine(15, 235, 290, canvas.color565(180, 180, 180));
+  
+  if (isSdFontLoaded && globalFontBuffer) canvas.loadFont(globalFontBuffer);
+  else canvas.setFont(&fonts::efontKR_24);
+  
   int totalSteps = 8; int step = infoIndex % totalSteps;
   if (step < 5) {
-    int curY = 105;
+    int curY = 98;
     for (int n = 0; n < 2; n++) {
         int newsIdx = step * 2 + n; String newsStr = myNews[newsIdx];
-        M5.Display.setTextColor(M5.Display.color565(255, 120, 0)); M5.Display.setCursor(20, curY); M5.Display.printf("%d.", n + 1);
-        M5.Display.setTextColor(BLACK); M5.Display.setTextWrap(false);
+        canvas.setTextColor(canvas.color565(255, 120, 0)); canvas.setCursor(20, curY); canvas.printf("%d.", n + 1);
+        canvas.setTextColor(BLACK); canvas.setTextWrap(false);
         int startIdx = 0; int xOff = 45;
         for (int i = 1; i <= newsStr.length(); i++) {
             if (i < newsStr.length() && (newsStr[i] & 0xC0) == 0x80) continue;
-            if (M5.Display.textWidth(newsStr.substring(startIdx, i)) > (300 - xOff)) {
+            if (canvas.textWidth(newsStr.substring(startIdx, i)) > (300 - xOff)) {
                 int endIdx = i - 1; while (endIdx > startIdx && (newsStr[endIdx] & 0xC0) == 0x80) endIdx--;
-                M5.Display.setCursor(xOff, curY); M5.Display.print(newsStr.substring(startIdx, endIdx));
-                curY += 21; startIdx = endIdx; i = startIdx; xOff = 20;
+                canvas.setCursor(xOff, curY); canvas.print(newsStr.substring(startIdx, endIdx));
+                curY += 25; startIdx = endIdx; i = startIdx; xOff = 20;
             }
         }
-        M5.Display.setCursor(xOff, curY); M5.Display.print(newsStr.substring(startIdx));
-        curY += 32; // 뉴스 기사 간 간격 확대 (26 -> 32)
-        if (n == 0) M5.Display.drawFastHLine(40, curY - 16, 240, M5.Display.color565(230, 230, 230));
+        canvas.setCursor(xOff, curY); canvas.print(newsStr.substring(startIdx));
+        curY += 32;
+        if (n == 0) canvas.drawFastHLine(40, curY - 16, 240, canvas.color565(230, 230, 230));
     }
-    M5.Display.setTextWrap(true);
   } else if (step == 5) {
     for (int i = 0; i < 2; i++) {
-        int yPos = 110 + (i * 45); M5.Display.setTextColor(M5.Display.color565(0, 80, 180)); M5.Display.setCursor(20, yPos); M5.Display.print(myIndices[i].name); 
-        M5.Display.setTextColor(BLACK); M5.Display.setCursor(120, yPos); M5.Display.print(myIndices[i].price); 
-        if (myIndices[i].change.indexOf("+") != -1) M5.Display.setTextColor(RED); else if (myIndices[i].change.indexOf("-") != -1) M5.Display.setTextColor(BLUE); else M5.Display.setTextColor(BLACK);
-        M5.Display.setCursor(220, yPos); M5.Display.printf("(%s%%)", myIndices[i].change.c_str());
+        int yPos = 110 + (i * 45); canvas.setTextColor(canvas.color565(0, 80, 180)); canvas.setCursor(20, yPos); canvas.print(myIndices[i].name); 
+        canvas.setTextColor(BLACK); canvas.setCursor(120, yPos); canvas.print(myIndices[i].price); 
+        if (myIndices[i].change.indexOf("+") != -1) canvas.setTextColor(RED); else if (myIndices[i].change.indexOf("-") != -1) canvas.setTextColor(BLUE); else canvas.setTextColor(BLACK);
+        canvas.setCursor(220, yPos); canvas.printf("(%s%%)", myIndices[i].change.c_str());
     }
   } else {
     int startIdx = (step == 6) ? 0 : 3;
     for (int i = 0; i < 3; i++) {
         int sIdx = startIdx + i; int yPos = 105 + (i * 36); 
-        M5.Display.setTextColor(M5.Display.color565(0, 80, 180)); M5.Display.setCursor(20, yPos); M5.Display.print(myStocks[sIdx].name); 
-        M5.Display.setTextColor(BLACK); M5.Display.setCursor(110, yPos); M5.Display.print(myStocks[sIdx].price);
-        if (myStocks[sIdx].change.indexOf("+") != -1) M5.Display.setTextColor(RED); 
-        else if (myStocks[sIdx].change.indexOf("-") != -1) M5.Display.setTextColor(BLUE); 
-        else M5.Display.setTextColor(BLACK);
-        M5.Display.setCursor(205, yPos); M5.Display.printf("(%s%%)", myStocks[sIdx].change.c_str());
+        canvas.setTextColor(canvas.color565(0, 80, 180)); canvas.setCursor(20, yPos); canvas.print(myStocks[sIdx].name); 
+        canvas.setTextColor(BLACK); canvas.setCursor(110, yPos); canvas.print(myStocks[sIdx].price);
+        if (myStocks[sIdx].change.indexOf("+") != -1) canvas.setTextColor(RED); 
+        else if (myStocks[sIdx].change.indexOf("-") != -1) canvas.setTextColor(BLUE); 
+        else canvas.setTextColor(BLACK);
+        canvas.setCursor(205, yPos); canvas.printf("(%s%%)", myStocks[sIdx].change.c_str());
     }
   }
-  M5.Display.endWrite();
+  canvas.pushSprite(0, 0);
 }
 
 void drawLumiFace(float blink) {
-  M5.Display.startWrite(); M5.Display.fillScreen(BLACK);
+  canvas.fillScreen(BLACK);
   int ew = eyeSize, eh = (int)(eyeSize * blink);
   uint16_t eyeColor = WHITE;
-  if (currentEmotion == LOVE) eyeColor = M5.Display.color565(255, 100, 150);
+  if (currentEmotion == LOVE) eyeColor = canvas.color565(255, 100, 150);
   
   for (int i = -1; i <= 1; i += 2) {
     int x = centerX + (i * eyeDistance) + (int)(lookX * 15);
@@ -186,46 +193,51 @@ void drawLumiFace(float blink) {
     
     switch (currentEmotion) {
       case HAPPY:
-        M5.Display.fillSmoothCircle(x, y, ew/2, eyeColor);
-        M5.Display.fillSmoothCircle(x, y + 10, ew/2, BLACK);
+        canvas.fillSmoothCircle(x, y, ew/2, eyeColor);
+        canvas.fillSmoothCircle(x, y + 10, ew/2, BLACK);
         break;
       case SLEEPY:
-        M5.Display.fillSmoothRoundRect(x - ew/2, y - 5, ew, 10, 5, eyeColor);
+        canvas.fillSmoothRoundRect(x - ew/2, y - 5, ew, 10, 5, eyeColor);
         break;
       case SURPRISED:
-        M5.Display.fillSmoothCircle(x, y, ew/2 + 5, eyeColor);
-        M5.Display.fillSmoothCircle(x, y, ew/2, BLACK);
-        M5.Display.fillSmoothCircle(x, y, ew/2 - 5, eyeColor);
+        canvas.fillSmoothCircle(x, y, ew/2 + 5, eyeColor);
+        canvas.fillSmoothCircle(x, y, ew/2, BLACK);
+        canvas.fillSmoothCircle(x, y, ew/2 - 5, eyeColor);
         break;
       case ANGRY:
-        M5.Display.fillSmoothCircle(x, y, ew/2, eyeColor);
-        if (i == -1) M5.Display.fillTriangle(x-ew, y-ew, x+ew, y-ew, x+ew, y-10, BLACK);
-        else M5.Display.fillTriangle(x-ew, y-ew, x+ew, y-ew, x-ew, y-10, BLACK);
+        canvas.fillSmoothCircle(x, y, ew/2, eyeColor);
+        if (i == -1) canvas.fillTriangle(x-ew, y-ew, x+ew, y-ew, x+ew, y-10, BLACK);
+        else canvas.fillTriangle(x-ew, y-ew, x+ew, y-ew, x-ew, y-10, BLACK);
         break;
       case SAD:
-        M5.Display.fillSmoothCircle(x, y, ew/2, eyeColor);
-        M5.Display.fillSmoothRoundRect(x-ew/2, y-ew/2, ew, ew/2+5, 2, BLACK);
+        canvas.fillSmoothCircle(x, y, ew/2, eyeColor);
+        canvas.fillSmoothRoundRect(x-ew/2, y-ew/2, ew, ew/2+5, 2, BLACK);
         break;
       case WINK:
-        if (i == -1) M5.Display.fillSmoothCircle(x, y, ew/2, eyeColor);
-        else M5.Display.fillSmoothRoundRect(x - ew/2, y - 5, ew, 10, 5, eyeColor);
+        if (i == -1) canvas.fillSmoothCircle(x, y, ew/2, eyeColor);
+        else canvas.fillSmoothRoundRect(x - ew/2, y - 5, ew, 10, 5, eyeColor);
         break;
       case LOVE:
-        M5.Display.fillSmoothCircle(x-10, y-10, 15, eyeColor);
-        M5.Display.fillSmoothCircle(x+10, y-10, 15, eyeColor);
-        M5.Display.fillTriangle(x-25, y-5, x+25, y-5, x, y+25, eyeColor);
+        canvas.fillSmoothCircle(x-10, y-10, 15, eyeColor);
+        canvas.fillSmoothCircle(x+10, y-10, 15, eyeColor);
+        canvas.fillTriangle(x-25, y-5, x+25, y-5, x, y+25, eyeColor);
         break;
       default:
-        M5.Display.fillSmoothCircle(x, y, ew/2, eyeColor);
-        if (blink < 0.3) M5.Display.fillSmoothCircle(x, y, ew/2 + 2, BLACK);
+        if (blink > 0.1) {
+          canvas.fillSmoothCircle(x, y, ew/2, eyeColor);
+          canvas.fillSmoothCircle(x + (lookX*5), y + (lookY*5), ew/4, BLACK);
+        } else {
+          canvas.fillSmoothRoundRect(x - ew/2, y - 2, ew, 4, 2, eyeColor);
+        }
         break;
     }
   }
-  M5.Display.endWrite();
+  canvas.pushSprite(0, 0);
 }
 
 void setup() {
   M5.begin(); Serial.begin(115200); M5.Display.setRotation(1); M5.Display.fillScreen(BLACK);
+  canvas.createSprite(320, 240); // 캔버스 생성
   if (SPIFFS.begin(true)) { if (SPIFFS.exists("/sodalogo.png")) { File f = SPIFFS.open("/sodalogo.png", "r"); if (f) { M5.Display.drawPng(&f, 0, 56); f.close(); } } }
   if (SD.begin(GPIO_NUM_4, SPI, 15000000)) { if (SD.exists(fontPath)) { File f = SD.open(fontPath, "r"); size_t fSize = f.size(); globalFontBuffer = (uint8_t*)ps_malloc(fSize); if (globalFontBuffer) { f.read(globalFontBuffer, fSize); f.close(); isSdFontLoaded = M5.Display.loadFont(globalFontBuffer); } } }
   WiFi.begin(ssid, password); unsigned long wifiStart = millis();
@@ -239,7 +251,6 @@ void loop() {
   auto touch = M5.Touch.getDetail();
   if (touch.wasPressed()) {
     currentMode = (currentMode == CLOCK_MODE) ? FACE_MODE : CLOCK_MODE;
-    M5.Display.fillScreen(currentMode == FACE_MODE ? BLACK : WHITE);
     if (currentMode == CLOCK_MODE) drawClock();
     else { currentEmotion = (Emotion)random(0, 9); drawLumiFace(1.0); }
   }
@@ -255,12 +266,12 @@ void loop() {
       lastExpressionChange = now;
     }
     if (now - lastBlink > 5000) {
-      for (float b = 1.0; b >= 0.0; b -= 0.25) { drawLumiFace(b); delay(10); }
-      for (float b = 0.0; b <= 1.0; b += 0.25) { drawLumiFace(b); delay(10); }
+      for (float b = 1.0; b >= 0.0; b -= 0.2) { drawLumiFace(b); }
+      for (float b = 0.0; b <= 1.0; b += 0.2) { drawLumiFace(b); }
       lastBlink = now + random(2000, 6000);
     } else {
       drawLumiFace(1.0);
     }
   }
-  delay(50);
+  delay(30);
 }
