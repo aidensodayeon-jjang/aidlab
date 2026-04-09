@@ -70,7 +70,7 @@ def fetch_real_news():
             if not any(kw in title for kw in exclude_keywords) and len(title) > 5:
                 title = title.replace("[속보]", "").strip()
                 news_list.append(title)
-            if len(news_list) >= 5: break
+            if len(news_list) >= 10: break
         return news_list
     except Exception as e:
         return ["뉴스를 불러올 수 없습니다."]

@@ -5,6 +5,8 @@
 #include <SPIFFS.h>
 #include <WiFi.h>
 #include <SD.h>
+#include <JPEGDEC.h>
+#include <AnimatedGIF.h>
 
 // --- 설정 ---
 const char *ssid = "SODATA02AD";
@@ -25,14 +27,194 @@ unsigned long lastBlink = 0, lastExpressionChange = 0;
 
 enum Emotion { NEUTRAL, SLEEPY, BORED, SURPRISED, HAPPY, WINK, SAD, ANGRY, LOVE };
 Emotion currentEmotion = NEUTRAL;
-enum DisplayMode { FACE_MODE, CLOCK_MODE };
+enum DisplayMode { FACE_MODE, CLOCK_MODE, VIDEO_MODE, GIF_MODE };
 DisplayMode currentMode = CLOCK_MODE;
 
 bool isSdFontLoaded = false;
 uint8_t* globalFontBuffer = nullptr;
 M5Canvas canvas(&M5.Display); // 더블 버퍼링을 위한 캔버스
+JPEGDEC jpeg;
+File mjpegFile;
+AnimatedGIF gif;
+File gifFile;
 
 void fetchNews(); void fetchStocks(); void fetchWeather(); void drawClock();
+
+// MJPEG 콜백 함수들
+int drawJPEG(JPEGDRAW *pDraw) {
+  canvas.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
+  return 1;
+}
+
+// GIF Draw Callback
+void GIFDraw(GIFDRAW *pDraw) {
+    uint8_t *s;
+    uint16_t *d, *usPalette, usTemp[320];
+    int x, y, iWidth;
+
+    iWidth = pDraw->iWidth;
+    if (iWidth > 320) iWidth = 320;
+
+    usPalette = pDraw->pPalette;
+    y = pDraw->iY + pDraw->y; // Current scanline
+
+    s = pDraw->pPixels;
+    d = usTemp;
+    for (x = 0; x < iWidth; x++) {
+        uint8_t c = *s++;
+        if (c != pDraw->ucTransparent) {
+            *d++ = usPalette[c];
+        } else {
+            *d++ = 0x0001; // Transparent pixel placeholder
+        }
+    }
+    M5.Display.pushImage(pDraw->iX, y, iWidth, 1, usTemp, 0x0001);
+}
+
+// GIF Callback functions for SD card access
+void * GIFOpen(const char *szFilename, int32_t *pSize) {
+    gifFile = SD.open(szFilename, "r");
+    if (gifFile) {
+        *pSize = gifFile.size();
+        return (void *)&gifFile;
+    }
+    return NULL;
+}
+void GIFClose(void *pHandle) {
+    File *f = (File *)pHandle;
+    if (f) f->close();
+}
+int32_t GIFRead(GIFFILE *pFile, uint8_t *pBuf, int32_t iLen) {
+    File *f = (File *)pFile->fHandle;
+    return f->read(pBuf, iLen);
+}
+int32_t GIFSeek(GIFFILE *pFile, int32_t iPosition) {
+    File *f = (File *)pFile->fHandle;
+    f->seek(iPosition);
+    return iPosition;
+}
+
+void playGif() {
+    if (!SD.exists("/f2.gif")) {
+        Serial.println("Error: f2.gif not found on SD card!");
+        currentMode = CLOCK_MODE;
+        drawClock();
+        return;
+    }
+
+    gif.begin(LITTLE_ENDIAN_PIXELS);
+
+    while (currentMode == GIF_MODE) {
+        if (gif.open("/f2.gif", GIFOpen, GIFClose, GIFRead, GIFSeek, GIFDraw)) {
+            while (gif.playFrame(true, NULL)) {
+                M5.update();
+                if (M5.Touch.getDetail().wasPressed()) {
+                    currentMode = CLOCK_MODE;
+                    gif.close();
+                    drawClock();
+                    return;
+                }
+            }
+            gif.close();
+        } else {
+            currentMode = CLOCK_MODE;
+            break;
+        }
+    }
+    drawClock();
+}
+
+void playMjpeg() {
+  if (!mjpegFile) {
+    mjpegFile = SPIFFS.open("/flow.mjpeg", "r");
+    if (!mjpegFile) return;
+  }
+
+  if (jpeg.openRAM((uint8_t*)nullptr, 0, drawJPEG)) { // 파일 핸들러 모드로 설정 (간접적으로 open 함수 사용)
+    // JPEGDEC의 open 함수는 사실 직접 파일 핸들링을 제공하지 않으므로, 
+    // 파일에서 청크를 읽어 openRAM하거나, 더 간단한 라이브러리를 사용하기도 하지만 
+    // 여기서는 M5GFX의 drawJpgFile을 활용하는 방식으로 수정하여 재생하겠습니다.
+  }
+}
+
+// MJPEG 재생 최적화 버전 (PSRAM 활용)
+void streamMjpeg() {
+    const char* filename = "/f2.mjpeg";
+    if (!SD.exists(filename)) {
+        Serial.printf("Error: %s not found on SD card!\n", filename);
+        currentMode = CLOCK_MODE;
+        drawClock();
+        return;
+    }
+    
+    File f = SD.open(filename, "r");
+    if (!f) return;
+    size_t fileSize = f.size();
+
+    // PSRAM에 동영상 파일 전체 로드
+    uint8_t* videoBuf = (uint8_t*)ps_malloc(fileSize);
+    if (!videoBuf) {
+        Serial.println("Error: Failed to allocate PSRAM for video!");
+        f.close();
+        currentMode = CLOCK_MODE;
+        drawClock();
+        return;
+    }
+
+    Serial.println("Loading video to PSRAM...");
+    f.read(videoBuf, fileSize);
+    f.close();
+    Serial.println("Video loaded!");
+
+    size_t pos = 0;
+    while(currentMode == VIDEO_MODE) {
+        M5.update();
+        auto touch = M5.Touch.getDetail();
+        if (touch.wasPressed()) {
+            currentMode = CLOCK_MODE;
+            break;
+        }
+        
+        // JPEG 프레임 시작 찾기 (0xFF 0xD8)
+        if (pos + 1 >= fileSize) pos = 0;
+        while (pos + 1 < fileSize && !(videoBuf[pos] == 0xFF && videoBuf[pos+1] == 0xD8)) {
+            pos++;
+        }
+        size_t startPos = pos;
+        
+        // JPEG 프레임 끝 찾기 (0xFF 0xD9)
+        pos += 2;
+        while (pos + 1 < fileSize && !(videoBuf[pos] == 0xFF && videoBuf[pos+1] == 0xD9)) {
+            pos++;
+        }
+        size_t endPos = pos + 2;
+
+        if (endPos <= fileSize) {
+            // 메모리 버퍼에서 직접 그리기
+            M5.Display.drawJpg(videoBuf + startPos, endPos - startPos, 0, 0);
+            pos = endPos;
+        } else {
+            pos = 0;
+        }
+        
+        // 프레임 속도 조절 (너무 빠르면 delay 추가 가능)
+        yield();
+    }
+    
+    free(videoBuf); // 사용 후 메모리 해제
+    drawClock();
+}
+
+bool isMarketOpen() {
+  auto d = M5.Rtc.getDate(); auto t = M5.Rtc.getTime();
+  if (d.weekDay == 0 || d.weekDay == 6) return false;
+  if (t.hours >= 9 && t.hours < 16) return true;
+  if (t.hours >= 22 || t.hours < 5) {
+    if (t.hours == 22 && t.minutes < 30) return false;
+    return true;
+  }
+  return false;
+}
 
 void loadLocalData() {
   if (!SPIFFS.begin(true)) return;
@@ -111,6 +293,12 @@ void fetchWeather() {
     currentTemp = doc["main"]["temp"];
     String w = doc["weather"][0]["main"].as<String>();
     if (w == "Clear") weatherKR = "맑음"; else if (w == "Clouds") weatherKR = "흐림"; else if (w == "Rain") weatherKR = "비"; else weatherKR = w;
+    
+    if (doc.containsKey("dt")) {
+      time_t localTime = doc["dt"].as<long>() + doc["timezone"].as<int>();
+      struct tm *tm_info = gmtime(&localTime);
+      M5.Rtc.setDateTime(tm_info);
+    }
     if (currentMode == CLOCK_MODE) drawClock();
   }
   http.end();
@@ -134,14 +322,20 @@ void drawClock() {
   canvas.setFont(&fonts::FreeSansBold24pt7b); canvas.setTextColor(canvas.color565(0, 80, 180)); 
   char timeStr[10]; sprintf(timeStr, "%02d:%02d", t.hours, t.minutes); canvas.drawCenterString(timeStr, 160, 52);
   
-  canvas.drawFastHLine(15, 90, 290, canvas.color565(180, 180, 180)); canvas.drawFastHLine(15, 235, 290, canvas.color565(180, 180, 180));
+  canvas.drawFastHLine(15, 235, 290, canvas.color565(180, 180, 180));
   
   if (isSdFontLoaded && globalFontBuffer) canvas.loadFont(globalFontBuffer);
   else canvas.setFont(&fonts::efontKR_24);
   
-  int totalSteps = 8; int step = infoIndex % totalSteps;
+  int totalSteps = 8; 
+  int step = infoIndex % totalSteps;
+  
+  if (!isMarketOpen() && (infoIndex / totalSteps) % 4 != 0) {
+    if (step >= 5) step = (step - 5) % 5;
+  }
+  
   if (step < 5) {
-    int curY = 98;
+    int curY = 83;
     for (int n = 0; n < 2; n++) {
         int newsIdx = step * 2 + n; String newsStr = myNews[newsIdx];
         canvas.setTextColor(canvas.color565(255, 120, 0)); canvas.setCursor(20, curY); canvas.printf("%d.", n + 1);
@@ -157,11 +351,10 @@ void drawClock() {
         }
         canvas.setCursor(xOff, curY); canvas.print(newsStr.substring(startIdx));
         curY += 32;
-        if (n == 0) canvas.drawFastHLine(40, curY - 16, 240, canvas.color565(230, 230, 230));
     }
   } else if (step == 5) {
     for (int i = 0; i < 2; i++) {
-        int yPos = 110 + (i * 45); canvas.setTextColor(canvas.color565(0, 80, 180)); canvas.setCursor(20, yPos); canvas.print(myIndices[i].name); 
+        int yPos = 95 + (i * 45); canvas.setTextColor(canvas.color565(0, 80, 180)); canvas.setCursor(20, yPos); canvas.print(myIndices[i].name); 
         canvas.setTextColor(BLACK); canvas.setCursor(120, yPos); canvas.print(myIndices[i].price); 
         if (myIndices[i].change.indexOf("+") != -1) canvas.setTextColor(RED); else if (myIndices[i].change.indexOf("-") != -1) canvas.setTextColor(BLUE); else canvas.setTextColor(BLACK);
         canvas.setCursor(220, yPos); canvas.printf("(%s%%)", myIndices[i].change.c_str());
@@ -169,7 +362,7 @@ void drawClock() {
   } else {
     int startIdx = (step == 6) ? 0 : 3;
     for (int i = 0; i < 3; i++) {
-        int sIdx = startIdx + i; int yPos = 105 + (i * 36); 
+        int sIdx = startIdx + i; int yPos = 90 + (i * 36); 
         canvas.setTextColor(canvas.color565(0, 80, 180)); canvas.setCursor(20, yPos); canvas.print(myStocks[sIdx].name); 
         canvas.setTextColor(BLACK); canvas.setCursor(110, yPos); canvas.print(myStocks[sIdx].price);
         if (myStocks[sIdx].change.indexOf("+") != -1) canvas.setTextColor(RED); 
@@ -243,23 +436,46 @@ void setup() {
   WiFi.begin(ssid, password); unsigned long wifiStart = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) delay(500);
   if (WiFi.status() == WL_CONNECTED) { fetchWeather(); fetchStocks(); fetchNews(); } else loadLocalData();
-  delay(1000); currentMode = CLOCK_MODE; drawClock();
+  delay(1000); 
+  
+  // MJPEG 모드로 즉시 시작 (f2.mjpeg)
+  currentMode = VIDEO_MODE; 
+  streamMjpeg(); 
 }
 
 void loop() {
   M5.update();
   auto touch = M5.Touch.getDetail();
+  
+  // 터치가 안될 경우를 대비해 각 모드 함수 재진입 로직 추가
+  if (currentMode == GIF_MODE) {
+    playGif();
+  } else if (currentMode == VIDEO_MODE) {
+    streamMjpeg();
+  }
+  
   if (touch.wasPressed()) {
-    currentMode = (currentMode == CLOCK_MODE) ? FACE_MODE : CLOCK_MODE;
-    if (currentMode == CLOCK_MODE) drawClock();
-    else { currentEmotion = (Emotion)random(0, 9); drawLumiFace(1.0); }
+    if (currentMode == CLOCK_MODE) {
+      currentMode = FACE_MODE;
+      currentEmotion = (Emotion)random(0, 9);
+      drawLumiFace(1.0);
+    } else if (currentMode == FACE_MODE) {
+      currentMode = VIDEO_MODE;
+      streamMjpeg();
+    } else if (currentMode == VIDEO_MODE) {
+      currentMode = GIF_MODE;
+      playGif();
+    } else {
+      currentMode = CLOCK_MODE;
+      drawClock();
+    }
   }
 
   unsigned long now = millis();
   if (currentMode == CLOCK_MODE) {
     if (now - lastInfoUpdate > 8000) { infoIndex++; drawClock(); lastInfoUpdate = now; }
     if (now - lastWeatherUpdate > 1800000 && WiFi.status() == WL_CONNECTED) { fetchWeather(); fetchStocks(); fetchNews(); lastWeatherUpdate = now; }
-  } else {
+  } else if (currentMode == FACE_MODE) {
     if (now - lastExpressionChange > 4000) {
       currentEmotion = (Emotion)random(0, 9);
       lookX = random(-10, 11) / 10.0; lookY = random(-10, 11) / 10.0;
